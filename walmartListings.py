@@ -11,7 +11,9 @@ def get_scraperapi_url(url):
     proxy_url = 'http://api.scraperapi.com/?' + urlencode(payload)
     return proxy_url
 
-def get_headers_and_query_for_sponsoredVideoAd(url):
+
+# method for getting headers and query for sponsor video on the page 
+def get_headers_and_query_for_sponsorVideoAd(url, cat_id, cat_path_name):
     headers = {
     "accept": "application/json",
     "accept-language": "en-US",
@@ -70,8 +72,8 @@ def get_headers_and_query_for_sponsoredVideoAd(url):
                             'ms': 0,
                         },
                     },
-                    'cat_id': '/3944/1060825/2489948',#cat_id 
-                    'cat_path_name': '/shop tvs by size',#cat_path_name both are unique for each browse nodes
+                    'cat_id': cat_id,#cat_id 
+                    'cat_path_name': cat_path_name,#cat_path_name both are unique for each browse nodes
                 },
                 'customerContext': {
                     'customerId': None,
@@ -81,7 +83,7 @@ def get_headers_and_query_for_sponsoredVideoAd(url):
                     'paymentMethodMetaData': [],
                 },
             },
-            'pageId': '976760_1396434_2586366',
+            'pageId': f"'{'/'.join(url.rstrip('/').split('/')[-1:])}'",# this is the last part of the url
             'pageType': 'BROWSE',
             'platform': 'DESKTOP',
             'tenant': 'WM_GLASS',
@@ -99,12 +101,19 @@ def get_headers_and_query_for_sponsoredVideoAd(url):
             'enableItemLimits': False,
         },
     }
+    return {
+        'headers': headers,
+        'json_data': json_data,
+    }
 
 
 class WalmartSpider(scrapy.Spider):
     name = "walmart"
     start_urls = [
-        "https://www.walmart.com/orchestra/home/graphql"
+        # "https://www.walmart.com/browse/electronics/all-apple-ipad/3944_1229722_1229728_3998838/?page={page}",
+        "https://www.walmart.com/browse/electronics/shop-tvs-by-size/3944_1060825_2489948/?page={page}",
+        "https://www.walmart.com/browse/health-and-medicine/fiber-supplements/976760_1396434_2586366/?page={page}",
+        
     ]
     def __init__(self, *args, **kwargs):
         super(WalmartSpider, self).__init__(*args, **kwargs)
@@ -113,52 +122,64 @@ class WalmartSpider(scrapy.Spider):
 
     def start_requests(self):
         for url in self.start_urls:
-            # for i in range(1, 6):
-            # pageurl = url.format(page=i)
-            proxy_url = get_scraperapi_url(url)  # Get proxy URL
-            yield scrapy.Request(
-                url=url,
-                method="POST",
-                headers=headers,
-                body=json.dumps(json_data),
-                callback=self.parse,      
-                dont_filter=True,          
-                errback=lambda failure: self.error_manager.handle_request_failure(failure, self.name)
-            )
+            for i in range(1, 6):
+                pageurl = url.format(page=i)
+                proxy_url = get_scraperapi_url(pageurl)  # Get proxy URL
+                yield scrapy.Request(
+                    url=proxy_url,
+                    callback=self.parse,        
+                    errback=lambda failure: self.error_manager.handle_request_failure(failure, self.name)
+                )
 
     def parse(self, response):
-        data = response.json()
-        print(response.url)
-        # script_data = response.xpath('//script[@id="__NEXT_DATA__"]/text()').get()
-        # if script_data:
-        #     # Parse the JSON data
-        #     json_data = json.loads(script_data)
-        #     search_data = json_data.get('props', {}).get('pageProps', {}).get('initialData', {}).get('searchResult', {}).get('itemStacks', [])
-        #     items = search_data[0]["items"]
-        #     # print(items)
-        #     for data in items:
-        #         item = WalmartItems()
-        #         # print(data)
-        #         item['name'] =  data.get("name")
-        #         item['imageurl'] = data.get("image")
-        #         item['linePrice'] = data.get("priceInfo", {}).get("linePrice")
-        #         item['itemPrice'] = data.get("priceInfo", {}).get("itemPrice")
-        #         item['productDetailPageUrl'] = data.get("canonicalUrl")
-        #         item['sponsored'] = data.get("isSponsoredFlag", False) or (data.get("sponsoredProduct") is not None)
-        #         item['variants'] = bool(data.get("variantList", []))
-        #         item['buyBoxSuppression'] = data.get("buyBoxSuppression")
-        #         item['catalogSellerId'] = data.get("catalogSellerId")
-        #         item['shortDescription'] = data.get("shortDescription")
-        #         item['badges'] = data.get("badges")
-        #         item['salesUnitType'] = data.get("salesUnitType")
-        #         item['sellerId'] = data.get("sellerId")
-        #         item['sellerName'] = data.get("sellerName")
-        #         item['hasSellerBadge'] = data.get("hasSellerBadge")
-        #         item['imageInfo'] = data.get("imageInfo")
-        #         item['ratings'] = data.get("rating", {})
-        #         yield item
+        script_data = response.xpath('//script[@id="__NEXT_DATA__"]/text()').get()
+        if script_data:
+            # Parse the JSON data
+            json_data = json.loads(script_data)
+            useful_data = json_data.get('props', {}).get('pageProps', {}).get('initialData', {})
+            #call the function to get the sponser video data
+            original_url= response.headers.get('Sa-Final-Url').decode("utf-8")#to call the funtion we need original url, we get from headers of scraper api
+            if 'page=1' in original_url:
+                browse_context = useful_data.get('pageMetadata').get('pageContext').get('browseContext')#data needed for querying and headers of sponser data
+                headers_and_query = get_headers_and_query_for_sponsorVideoAd(original_url, cat_id=browse_context.get('cat_id',{}),cat_path_name=browse_context.get('cat_path_name',{}))
+                yield scrapy.Request(
+                    url="https://www.walmart.com/orchestra/home/graphql",
+                    method="POST",
+                    headers=headers_and_query.get('headers'),
+                    body=json.dumps(headers_and_query.get('json_data')),
+                    callback=self.sponserDataParse,      
+                    dont_filter=True,          
+                    errback=lambda failure: self.error_manager.handle_request_failure(failure, self.name)
+                )
+
+
+            #continue scraping original data 
+            items = useful_data.get('searchResult', {}).get('itemStacks', [])[0]["items"]
+            for data in items:
+                item = WalmartItems()
+                item['name'] =  data.get("name")
+                item['imageurl'] = data.get("image")
+                item['linePrice'] = data.get("priceInfo", {}).get("linePrice")
+                item['itemPrice'] = data.get("priceInfo", {}).get("itemPrice")
+                item['productDetailPageUrl'] = data.get("canonicalUrl")
+                item['sponsored'] = data.get("isSponsoredFlag", False) or (data.get("sponsoredProduct") is not None)
+                item['variants'] = bool(data.get("variantList", []))
+                item['buyBoxSuppression'] = data.get("buyBoxSuppression")
+                item['catalogSellerId'] = data.get("catalogSellerId")
+                item['shortDescription'] = data.get("shortDescription")
+                item['badges'] = data.get("badges")
+                item['salesUnitType'] = data.get("salesUnitType")
+                item['sellerId'] = data.get("sellerId")
+                item['sellerName'] = data.get("sellerName")
+                item['hasSellerBadge'] = data.get("hasSellerBadge")
+                item['imageInfo'] = data.get("imageInfo")
+                item['ratings'] = data.get("rating", {})
+                yield item
             
-            # Save JSON data to a file (append to existing file)
-        with open("sponserd.json", "a", encoding="utf-8") as f:
+
+    def sponserDataParse(self,response):
+        data = response.json()
+        # Save JSON data to a file (append to existing file)
+        with open("sponsorData.json", "a", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
             f.write("\n")  # New line for each page’s data
